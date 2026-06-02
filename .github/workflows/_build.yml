@@ -16,6 +16,13 @@ on:
         description: >-
           Value of the GITHUB_SHA variable for the workflow on the
           origin repository.
+      upload_images:
+        type: boolean
+        required: false
+        default: false
+        description: >-
+          When true, uploads Yocto images and VM images to artifacts.
+          Set to true only when called by build-and-upload workflow.
 
 # This is absolutely crazy but Action Variables are not accessible to runs
 # triggered by PRs from forks repository (https://github.com/orgs/community/discussions/44322).
@@ -107,6 +114,18 @@ jobs:
           name: sbom-${{ matrix.cqfd_flavor }}
           path: |
             ${{ env.WORKSPACE }}/build/tmp/deploy/images/**/*.rootfs.spdx.json
+          if-no-files-found: error
+
+      - name: Upload Yocto images
+        if: inputs.upload_images
+        uses: actions/upload-artifact@v7
+        with:
+          archive: true
+          name: yocto-images-${{ matrix.cqfd_flavor }}
+          path: |
+            ${{ env.WORKSPACE }}/build/tmp/deploy/images/**/*.rootfs.wic.gz
+            ${{ env.WORKSPACE }}/build/tmp/deploy/images/**/*.rootfs.wic.bmap
+            ${{ env.WORKSPACE }}/build/tmp/deploy/images/**/*.rootfs.wic.qcow2
           if-no-files-found: error
 
       # We clean the image directory at the end so we don't pollute
