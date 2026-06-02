@@ -1,0 +1,105 @@
+name: Build and Upload to S3
+
+on:
+  # Manual trigger for on-demand builds
+  workflow_dispatch:
+    inputs:
+      origin_repository:
+        type: string
+        required: false
+        default: SEAPATH/yocto-bsp
+        description: Repository that triggered this workflow dispatch.
+      origin_sha:
+        type: string
+        required: false
+        description: >-
+          Commit SHA to build. If not provided, uses the default branch.
+      build_id:
+        type: string
+        required: false
+        description: >-
+          Build identifier for organizing artifacts in S3.
+          If not provided, defaults to current timestamp (YYYY-MM-DD/HH-MM-SS).
+
+run-name: "Build and S3 Upload ${{ inputs.origin_repository || github.repository }}"
+
+permissions: read-all
+
+env:
+  REPO_MANIFEST_REPOSITORY: 'SEAPATH/repo-manifest'
+  REPO_MANIFEST_NAME: 'wrynose.xml'
+
+jobs:
+  call-build:
+    name: Build
+    uses: ./.github/workflows/_build.yml
+    with:
+      origin_repository: "${{ inputs.origin_repository || github.repository }}"
+      origin_sha: "${{ inputs.origin_sha || github.sha }}"
+      upload_images: true
+
+  upload-artifacts:
+    name: Upload Artifacts to S3
+    needs: call-build
+    runs-on: ["ubuntu-slim"]
+    if: success()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -name '*' | head -20
+
+      - name: Organize artifacts for S3 upload
+        run: |
+          UPLOAD_DIR="s3-upload"
+          mkdir -p "$UPLOAD_DIR"
+
+          # Copy SBOM files
+          echo "Copying SBOM files..."
+          find artifacts -name "*.rootfs.spdx.json" -type f | while read -r file; do
+            cp "$file" "$UPLOAD_DIR/" || true
+          done
+
+          # Copy Yocto images (rootfs.wic.gz and rootfs.wic.bmap)
+          echo "Copying Yocto images..."
+          find artifacts -name "*.rootfs.wic.gz" -type f | while read -r file; do
+            cp "$file" "$UPLOAD_DIR/" || true
+          done
+          find artifacts -name "*.rootfs.wic.bmap" -type f | while read -r file; do
+            cp "$file" "$UPLOAD_DIR/" || true
+          done
+
+          # Copy VM images (rootfs.wic.qcow2)
+          echo "Copying VM images..."
+          find artifacts -name "*.rootfs.wic.qcow2" -type f | while read -r file; do
+            cp "$file" "$UPLOAD_DIR/" || true
+          done
+
+          echo "Organized artifacts:"
+          find $UPLOAD_DIR -type f
+
+      - name: Upload to S3
+        env:
+          S3CMD_ACCESS_KEY: ${{ secrets.S3CMD_ACCESS_KEY }}
+          S3CMD_SECRET_KEY: ${{ secrets.S3CMD_SECRET_KEY }}
+          S3_BUCKET: s3://seapath-releases
+          BUILD_ID: ${{ inputs.build_id || format('{0:yyyy-MM-dd/HH-mm-ss}', now) }}
+        run: |
+          # Install s3cmd if not already available
+          which s3cmd || pip install s3cmd
+
+          # Create s3cmd configuration with credentials from secrets:
+          s3cmd --configure --access_key=${S3CMD_ACCESS_KEY} --secret_key=${S3CMD_SECRET_KEY}
+          # Upload artifacts to S3
+          s3cmd sync s3-upload/ ${S3_BUCKET}/builds/${BUILD_ID}/
+
+          echo "S3 upload skeleton - configure s3cmd credentials in repository secrets"
+          echo "Bucket: ${S3_BUCKET}"
+          echo "Build ID: ${BUILD_ID}"
+          echo "Artifacts ready in: s3-upload/"
+          ls -lah s3-upload/
